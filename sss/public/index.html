@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>沉默平台 - The Silence</title>
+    <style>
+        /* 极致的暗黑美学重置 */
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background-color: #000000; overflow: hidden; font-family: 'Helvetica Neue', 'SF Pro Display', sans-serif; user-select: none; }
+        canvas { display: block; }
+        
+        /* 隐形UI设计 */
+        .ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; transition: opacity 2s; }
+        .hidden { opacity: 0; }
+        
+        .status { position: absolute; top: 30px; left: 30px; color: rgba(255, 255, 255, 0.4); font-size: 14px; letter-spacing: 2px; font-weight: 200; }
+        .timer { position: absolute; bottom: 40px; left: 50%; transform: translateX(-50%); color: rgba(255, 255, 255, 0.3); font-size: 16px; letter-spacing: 4px; font-weight: 200; }
+        
+        /* 唯一的按钮 */
+        .depart-btn { position: absolute; bottom: 40px; right: 40px; color: rgba(255, 255, 255, 0.2); font-size: 12px; letter-spacing: 3px; cursor: pointer; pointer-events: auto; transition: color 0.5s; text-transform: uppercase; }
+        .depart-btn:hover { color: rgba(255, 255, 255, 0.8); }
+
+        /* 离场神谕回执 (纯CSS实现极简海报) */
+        .receipt-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: #000; color: #fff; display: flex; flex-direction: column; justify-content: center; align-items: center; opacity: 0; pointer-events: none; transition: opacity 3s ease-in; font-family: 'Playfair Display', 'Noto Serif', serif; }
+        .receipt-overlay.active { opacity: 1; pointer-events: auto; }
+        .receipt-content { text-align: center; max-width: 600px; font-weight: 300; line-height: 2.5; letter-spacing: 2px; }
+        .receipt-line { width: 1px; height: 60px; background: rgba(255,255,255,0.3); margin: 0 auto 40px auto; }
+        .receipt-date { font-size: 14px; color: rgba(255,255,255,0.5); margin-bottom: 30px; font-family: sans-serif; letter-spacing: 4px; }
+        .receipt-text { font-size: 18px; color: rgba(255,255,255,0.85); margin-bottom: 20px; }
+        .receipt-footer { margin-top: 60px; font-size: 12px; color: rgba(255,255,255,0.3); letter-spacing: 8px; text-transform: uppercase; }
+    </style>
+</head>
+<body>
+
+    <canvas id="universe"></canvas>
+
+    <div class="ui-layer" id="ui">
+        <div class="status">ONLINE: <span id="onlineCount">1</span></div>
+        <div class="timer" id="timerDisplay">00:00:00</div>
+        <div class="depart-btn" id="departBtn">[ Depart ]</div>
+    </div>
+
+    <!-- 离场回执海报 -->
+    <div class="receipt-overlay" id="receipt">
+        <div class="receipt-content">
+            <div class="receipt-line"></div>
+            <div class="receipt-date" id="rDate">2026.02.27</div>
+            <div class="receipt-text">你在沉默中悬浮了 <span id="rTime">0</span>。</div>
+            <div class="receipt-text">期间，有 <span id="rUsers">0</span> 个灵魂与你共享了这片星空。</div>
+            <div class="receipt-text">你向深空发出了 <span id="rPings">0</span> 次呼唤。</div>
+            <div class="receipt-footer">The Silence</div>
+        </div>
+    </div>
+
+    <!-- 引入 Socket.io -->
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        // --- 1. 基础配置与连接 ---
+        const socket = io();
+        const canvas = document.getElementById('universe');
+        const ctx = canvas.getContext('2d');
+        let width, height;
+
+        // 数据统计
+        let startTime = Date.now();
+        let pingCount = 0;
+        let maxOnline = 1;
+        let myStar = null;
+
+        // 自适应屏幕
+        function resize() {
+            width = window.innerWidth;
+            height = window.innerHeight;
+            canvas.width = width;
+            canvas.height = height;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // --- 2. 视觉算法：基于时间的色温映射 ---
+        function getStarColor() {
+            const hour = new Date().getHours();
+            if(hour >= 0 && hour < 6) return '100, 150, 255'; // 深蓝
+            if(hour >= 6 && hour < 12) return '245, 215, 110'; // 晨黄
+            if(hour >= 12 && hour < 18) return '255, 255, 255'; // 纯白
+            return '255, 122, 89'; // 黄昏暗红
+        }
+
+        // --- 3. 核心物理类定义 ---
+        let stars = [];
+        let ripples = [];
+        let shootingStars =[];
+
+        class Star {
+            constructor(isMe = false) {
+                this.isMe = isMe;
+                this.x = Math.random() * width;
+                this.y = Math.random() * height;
+                this.baseRadius = isMe ? 2.5 : (Math.random() * 1.5 + 0.5);
+                this.color = getStarColor();
+                
+                // 极度缓慢的漂游速度
+                this.vx = (Math.random() - 0.5) * 0.1;
+                this.vy = (Math.random() - 0.5) * 0.1;
+                
+                // 呼吸效果
+                this.angle = Math.random() * Math.PI * 2;
+                this.breathSpeed = Math.random() * 0.02 + 0.01;
+            }
+
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                if (this.x < 0) this.x = width;
+                if (this.x > width) this.x = 0;
+                if (this.y < 0) this.y = height;
+                if (this.y > height) this.y = 0;
+                
+                this.angle += this.breathSpeed;
+            }
+
+            draw() {
+                // 正弦波计算呼吸透明度 (0.3 ~ 0.9)
+                const alpha = 0.6 + Math.sin(this.angle) * 0.3;
+                
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.baseRadius, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(${this.color}, ${alpha})`;
+                
+                // 泛光效果
+                ctx.shadowBlur = this.isMe ? 20 : 10;
+                ctx.shadowColor = `rgba(${this.color}, 1)`;
+                ctx.fill();
+                ctx.shadowBlur = 0; // 重置
+            }
+        }
+
+        class Ripple {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.radius = 0;
+                this.maxRadius = width > 800 ? 300 : 150; // 光晕最大范围
+                this.alpha = 0.8;
+            }
+            update() {
+                // 缓慢扩大，透明度极速下降 (贝塞尔感)
+                this.radius += 2;
+                this.alpha -= 0.005;
+            }
+            draw() {
+                if (this.alpha <= 0) return;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.strokeStyle = `rgba(255, 255, 255, ${this.alpha})`;
+                ctx.lineWidth = 1;
+                ctx.stroke();
+            }
+        }
+
+        class ShootingStar {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.vx = 15; // 极速向右上角划过
+                this.vy = -10;
+                this.alpha = 1;
+            }
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                this.alpha -= 0.01;
+            }
+            draw() {
+                if(this.alpha <= 0) return;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, 2, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(255, 255, 255, ${this.alpha})`;
+                ctx.shadowBlur = 30;
+                ctx.shadowColor = "#FFF";
+                ctx.fill();
+                
+                // 拖影
+                ctx.beginPath();
+                ctx.moveTo(this.x, this.y);
+                ctx.lineTo(this.x - this.vx * 10, this.y - this.vy * 10);
+                ctx.strokeStyle = `rgba(255, 255, 255, ${this.alpha * 0.5})`;
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                ctx.shadowBlur = 0;
+            }
+        }
+
+        // --- 4. 初始化星空 ---
+        function init() {
+            myStar = new Star(true);
+            // 生成底噪星星 (即使只有1人，宇宙也不空旷)
+            for(let i=0; i<150; i++) {
+                stars.push(new Star());
+            }
+        }
+
+        // --- 5. 动画主循环 ---
+        function animate() {
+            // 产生拖影的擦除法 (不完全擦除，保留10%透明度的上一帧)
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+            ctx.fillRect(0, 0, width, height);
+
+            ctx.globalCompositeOperation = 'lighter'; // 叠加发光
+
+            // 更新并绘制所有元素
+            myStar.update();
+            myStar.draw();
+
+            stars.forEach(s => { s.update(); s.draw(); });
+            
+            ripples.forEach((r, index) => {
+                r.update();
+                r.draw();
+                if(r.alpha <= 0) ripples.splice(index, 1);
+            });
+
+            shootingStars.forEach((ss, index) => {
+                ss.update();
+                ss.draw();
+                if(ss.alpha <= 0) shootingStars.splice(index, 1);
+            });
+
+            requestAnimationFrame(animate);
+        }
+
+        init();
+        animate();
+
+        // --- 6. 交互逻辑 ---
+        
+        // 鼠标长按释放涟漪
+        document.addEventListener('mousedown', (e) => {
+            if(e.target.id === 'departBtn') return; // 点按钮时不触发
+            ripples.push(new Ripple(myStar.x, myStar.y));
+            pingCount++;
+            socket.emit('send_ripple', { x: myStar.x / width, y: myStar.y / height }); // 发送百分比坐标
+        });
+
+        // 接收别人的涟漪
+        socket.on('receive_ripple', (data) => {
+            // 将百分比坐标还原为真实屏幕坐标
+            ripples.push(new Ripple(data.x * width, data.y * height));
+        });
+
+        // 更新在线人数
+        socket.on('update_count', (count) => {
+            document.getElementById('onlineCount').innerText = count;
+            if(count > maxOnline) maxOnline = count;
+        });
+
+        // 接收别人变成流星
+        socket.on('user_departed', (data) => {
+            shootingStars.push(new ShootingStar(data.x * width, data.y * height));
+        });
+
+        // UI：计时器
+        setInterval(() => {
+            const diff = Math.floor((Date.now() - startTime) / 1000);
+            const h = String(Math.floor(diff / 3600)).padStart(2, '0');
+            const m = String(Math.floor((diff % 3600) / 60)).padStart(2, '0');
+            const s = String(diff % 60).padStart(2, '0');
+            document.getElementById('timerDisplay').innerText = `${h}:${m}:${s}`;
+        }, 1000);
+
+        // --- 7. 离场与回执 ---
+        document.getElementById('departBtn').addEventListener('click', () => {
+            // 告诉其他人我走了
+            socket.emit('depart', { x: myStar.x / width, y: myStar.y / height });
+            
+            // 隐藏UI，把自己变成流星
+            document.getElementById('ui').classList.add('hidden');
+            shootingStars.push(new ShootingStar(myStar.x, myStar.y));
+            myStar.x = -9999; // 把自己移出屏幕
+
+            // 格式化停留时长
+            const diffMin = Math.max(1, Math.floor((Date.now() - startTime) / 60000));
+
+            // 2秒后展示神谕回执
+            setTimeout(() => {
+                const now = new Date();
+                document.getElementById('rDate').innerText = `${now.getFullYear()}.${String(now.getMonth()+1).padStart(2,'0')}.${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+                document.getElementById('rTime').innerText = `${diffMin} 分钟`;
+                document.getElementById('rUsers').innerText = maxOnline;
+                document.getElementById('rPings').innerText = pingCount;
+                
+                document.getElementById('receipt').classList.add('active');
+            }, 2000);
+        });
+
+        // 隐藏鼠标指针逻辑
+        let timeout;
+        document.onmousemove = function(){
+            document.body.style.cursor = 'auto';
+            clearTimeout(timeout);
+            timeout = setTimeout(function(){ document.body.style.cursor = 'none'; }, 3000);
+        }
+    </script>
+</body>
+</html>
